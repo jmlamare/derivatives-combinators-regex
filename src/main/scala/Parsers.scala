@@ -1,6 +1,12 @@
 
 object Parsers {
 
+  var captureId: Int = 0;
+  def nextCaptureId(): Int = {
+    captureId = captureId + 1;
+    return captureId;
+  }
+
   def lastChar(str: String): Char = str.charAt(str.length-1)
 
   implicit def string(str: String): Parser = if( str.isEmpty ) Epsilon else concat(literal(str.charAt(0)), string(str.substring(1)))
@@ -17,7 +23,7 @@ object Parsers {
 
   def union(parsers: Parser*): Parser = parsers.reduce[Parser](UnionParser(_,_ ))
 
-  def capture(inner: Parser): Parser = CaptureParser(inner, None)
+  def capture(inner: Parser): Parser = CaptureParser(inner, nextCaptureId())
 
   def kleene(inner: Parser): Parser = inner match {
     case Epsilon => Epsilon
@@ -44,52 +50,52 @@ object Parsers {
     case Continuable(inner, content, context) => Continuable(concat(inner, parser), content, context)
   }
 
-  private[Parsers] def capturing(evaluator: Evaluator, capture: CaptureParser): Evaluator = evaluator match {
+  private[Parsers] def capturing(evaluator: Evaluator, id: Int): Evaluator = evaluator match {
     case Rejected => Rejected
-    case Disjonction(left, right) => Disjonction(capturing(left, capture), capturing(right, capture))// capturing(evaluator, capture)
-    case Continuable(inner, content, context) => Continuable(CaptureParser(inner, Some(capture)), content, context)
+    case Disjonction(left, right) => Disjonction(capturing(left, id), capturing(right, id))// capturing(evaluator, capture)
+    case Continuable(inner, content, context) => Continuable(CaptureParser(inner, id), content, context)
   }
 
 
   sealed trait EvaluationContext {
     def flush(captures: List[String] = List()): EvaluationContext
-    def capture(key: CaptureParser, content: String, evaluationContext: EvaluationContext => EvaluationContext = identity[EvaluationContext]): EvaluationContext
+    def capture(id: Int, content: String, evaluationContext: EvaluationContext => EvaluationContext = identity[EvaluationContext]): EvaluationContext
     def continuable(parser: Parser, content: String, evaluationContext: EvaluationContext => EvaluationContext = identity[EvaluationContext]) : Evaluator
   }
 
-  private[Parsers] case class EvaluationContextCapture(val next: EvaluationContext, key: CaptureParser, current: List[Char]) extends EvaluationContext {
-    override def capture(key: CaptureParser, content: String, evaluationContext: EvaluationContext => EvaluationContext) =
-      if( this.key.key() == key.key() )
-        EvaluationContextContinuable(evaluationContext(this.next), this.key, lastChar(content) :: this.current)
+  private[Parsers] case class EvaluationContextCapture(val next: EvaluationContext, id: Int, current: List[Char]) extends EvaluationContext {
+    override def capture(id: Int, content: String, evaluationContext: EvaluationContext => EvaluationContext) =
+      if( this.id == id )
+        EvaluationContextContinuable(evaluationContext(this.next), this.id, lastChar(content) :: this.current)
       else
-        EvaluationContextContinuable(evaluationContext(this.flush()), key.key(), lastChar(content) :: Nil)
+        EvaluationContextContinuable(evaluationContext(this.flush()), id, lastChar(content) :: Nil)
     override def flush(captures: List[String] = List()) =
       next.flush(current.reverse.mkString :: captures)
     override def continuable(parser: Parser, content: String, evaluationContext: EvaluationContext => EvaluationContext): Evaluator =
       this.flush().continuable(parser, content, evaluationContext)
   }
 
-  private[Parsers] case class EvaluationContextContinuable(val next: EvaluationContext, key: CaptureParser, current: List[Char]) extends EvaluationContext {
+  private[Parsers] case class EvaluationContextContinuable(val next: EvaluationContext, id: Int, current: List[Char]) extends EvaluationContext {
     override def flush(captures: List[String]) =
       next.flush(captures)
-    override def capture(key: CaptureParser, content: String, evaluationContext: EvaluationContext => EvaluationContext): EvaluationContext =
-      next.capture(key, content, ec=> new EvaluationContextContinuable(evaluationContext(ec), this.key, this.current))
+    override def capture(id: Int, content: String, evaluationContext: EvaluationContext => EvaluationContext): EvaluationContext =
+      new EvaluationContextContinuable(next.capture(id, content, evaluationContext), this.id, this.current)
     override def continuable(parser: Parser, content: String, evaluationContext: EvaluationContext => EvaluationContext): Evaluator =
-      next.continuable(parser, content, ec => new EvaluationContextCapture(evaluationContext(ec), this.key, this.current))
+      next.continuable(parser, content, ec => evaluationContext(new EvaluationContextCapture(ec, this.id, this.current)))
   }
 
   private[Parsers] case class EvaluationContextProcess(val next: EvaluationContext, captured: List[String]) extends EvaluationContext {
     override def flush(captures: List[String]) =
       next.flush(captures ::: this.captured)
-    override def capture(key: CaptureParser, content: String, evaluationContext: EvaluationContext => EvaluationContext) =
-      EvaluationContextContinuable(evaluationContext(this), key, List(lastChar(content)))
+    override def capture(id: Int, content: String, evaluationContext: EvaluationContext => EvaluationContext) =
+      EvaluationContextContinuable(evaluationContext(this), id, List(lastChar(content)))
     override def continuable(parser: Parser, content: String, evaluationContext: EvaluationContext => EvaluationContext): Evaluator =
       Continuable(parser, content, evaluationContext(this)) // next.continuable(parser, content, new EvaluationContextProcess(evaluationContext, this.captured))
   }
 
   private[Parsers] case object EvaluationEmpty extends EvaluationContext {
-    override def capture(key: CaptureParser, content: String, evaluationContext: EvaluationContext => EvaluationContext) =
-      EvaluationContextContinuable(evaluationContext(this), key, List(lastChar(content)))
+    override def capture(id: Int, content: String, evaluationContext: EvaluationContext => EvaluationContext) =
+      EvaluationContextContinuable(evaluationContext(this), id, List(lastChar(content)))
     override def continuable(parser: Parser, content: String, evaluationContext: EvaluationContext=>EvaluationContext) =
       Continuable(parser, content, evaluationContext(this))
     override def flush(captures: List[String]) =
@@ -160,10 +166,9 @@ object Parsers {
     override val isNullable = left.isNullable || right.isNullable
     override def evaluate(str: String, ctx: EvaluationContext) = combine(left.evaluate(str, ctx), right.evaluate(str, ctx))
   }
-  case class CaptureParser(inner: Parser, owner: Option[CaptureParser]) extends Parser {
-    def key(): CaptureParser = owner.getOrElse(this)
+  case class CaptureParser(inner: Parser, id: Int) extends Parser {
     override def isNullable: Boolean = inner.isNullable
-    override def evaluate(str: String, ctx: EvaluationContext) = capturing(inner.evaluate(str, ctx.capture(this, str)), owner.getOrElse(this))
+    override def evaluate(str: String, ctx: EvaluationContext) = capturing(inner.evaluate(str, ctx.capture(id, str)), id)
   }
 
 
