@@ -46,7 +46,7 @@ object Parsers {
 
   private[Parsers] def capturing(evaluator: Evaluator, capture: CaptureParser): Evaluator = evaluator match {
     case Rejected => Rejected
-    case Disjonction(leftParser, rightParser) => capturing(evaluator, capture)
+    case Disjonction(left, right) => Disjonction(capturing(left, capture), capturing(right, capture))// capturing(evaluator, capture)
     case Continuable(inner, content, context) => Continuable(CaptureParser(inner, Some(capture)), content, context)
   }
 
@@ -73,9 +73,9 @@ object Parsers {
     override def flush(captures: List[String]) =
       next.flush(captures)
     override def capture(key: CaptureParser, content: String): EvaluationContext =
-      next.capture(key, content)
+      new EvaluationContextContinuable(next.capture(key, content), key, current);
     override def continuable(parser: Parser, content: String, evaluationContext: EvaluationContext => EvaluationContext): Evaluator =
-      next.continuable(parser, content, evaluationContext => new EvaluationContextCapture(evaluationContext, this.key, this.current))
+      next.continuable(parser, content, ec => new EvaluationContextCapture(evaluationContext(ec), this.key, this.current))
   }
 
   private[Parsers] case class EvaluationContextProcess(val next: EvaluationContext, captured: List[String]) extends EvaluationContext {
@@ -221,9 +221,10 @@ object Parsers {
   val elementEnd: Parser = concat('<', '/', name, '>')
 
 
-  val test1: Parser = concat('<', capture(kleene(range('a','z'))), '>')
+  val test1: Parser = capture(concat('<', capture(kleene(range('a','z'))), '>'))
   val test2: Parser = concat('<', kleene(capture(range('a','z'))), '>')
-  val test3: Parser = concat('<', kleene(concat(capture(range('a', 'z')), '=', capture(kleene(union(range('1', '4'), range('6', '9')))), union(' ', Epsilon))), '>')
+  val test3: Parser = capture(capture((range('a', 'z'))))
+  val test4: Parser = concat('<', kleene(concat(capture(range('a', 'z')), '=', capture(kleene(union(range('1', '4'), range('6', '9')))), union(' ', Epsilon))), '>')
 
   def main(args: Array[String]): Unit = {
 
@@ -231,13 +232,14 @@ object Parsers {
     val startTime = System.currentTimeMillis();
     val startMemory = (Runtime.getRuntime().totalMemory() -  Runtime.getRuntime().freeMemory())
     // val result = elementStart("<a>zut".toStream)
-    val result = elementStart("<elementName attrKey1=\"attrValue1\" attrKey2=\"attrValue2&lt;\"/>".toStream)
-    // val result = elementStart("<elementName attrKey1=\"attrValue1\" attrKey2=\"attrVal".toStream)
+    // val result = capture(elementStart)("<elementName attrKey1=\"attrValue1\" attrKey2=\"attrValue2&lt;\"/>".toStream)
+    // val result = elementStart("<elementName attrKey1=\"attrValue1\" attrKey2=\"attrVal\"".toStream)
     // val result = comment("<!-- B+, B, or B--->".toStream)
     // val result = comment("<!-- declarations for <head> & <body> -->".toStream)
     // val result = cdata("<![CDATA[<greeting>Hello, world!</greeting>]]>".toStream)
     // val result = test2("<abcd>".toStream)
-    // val result = test3("<a=1 b=2>".toStream)
+    // val result = test4("<a=1 b=2>".toStream)
+    val result = test1("<abc>".toStream)
     println("")
     println(result)
 
@@ -248,7 +250,7 @@ object Parsers {
   }
 
   def gc() {
-    val  ref = new java.lang.ref.WeakReference(new  java.lang.ref.WeakReference(Array.fill(1024*1034*256)(0)));
+    val  ref = new java.lang.ref.WeakReference(new  java.lang.ref.WeakReference(Array.fill(1024*1024*600)(0)));
     while(ref.get() != null) {
       System.gc();
     }
